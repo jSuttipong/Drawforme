@@ -4,25 +4,26 @@ import {
   MainMenu,
   WelcomeScreen,
   exportToBlob,
-  exportToSvg,
-  serializeAsJSON,
   restoreElements,
   loadFromBlob,
 } from "@excalidraw/excalidraw";
 import {
   cleanName,
+  connectGitHub,
   deleteProject,
+  disconnectGitHub,
   getProject,
+  initStorage,
   listProjects,
   renameProject,
   saveProject,
 } from "./api";
-import { embedThaiFontInSvg } from "./thaiFont";
+import CloudDialog from "./components/CloudDialog";
 import { applyRichStyle, syncRichText } from "./richText";
 import TextStylePanel from "./components/TextStylePanel";
 import ProjectList from "./components/ProjectList";
 import NameDialog from "./components/NameDialog";
-import { CopyIcon, FolderIcon, PlusIcon, SaveIcon, UploadIcon } from "./components/icons";
+import { CloudIcon, CopyIcon, FolderIcon, PlusIcon, SaveIcon, UploadIcon } from "./components/icons";
 
 const STORAGE_KEY = "vdea-scene";
 const CURRENT_KEY = "vdea-current-project";
@@ -37,7 +38,8 @@ try {
 } catch {
   /* storage unavailable */
 }
-const AUTOSAVE_MS = 1500;
+const AUTOSAVE_MS = 1500; // local folder
+const AUTOSAVE_CLOUD_MS = 6000; // GitHub (each save is a commit)
 
 // appState keys worth keeping in the browser between visits
 const PERSIST_KEYS = [
@@ -89,6 +91,9 @@ export default function App() {
   const [dialog, setDialog] = useState(null); // { mode, initial, target }
   const [dialogError, setDialogError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [storage, setStorage] = useState({ mode: "loading", label: "" });
+  const [showCloud, setShowCloud] = useState(false);
+  const storageRef = useRef("loading");
 
   const currentRef = useRef(current);
   const savedVersion = useRef(null);
@@ -113,28 +118,9 @@ export default function App() {
   // ---------- saving ----------
   const writeToServer = useCallback(
     async (id, { create = false } = {}) => {
-      const all = api.getSceneElementsIncludingDeleted();
-      const elements = api.getSceneElements();
-      const appState = api.getAppState();
       const files = api.getFiles();
-      const version = sceneVersion(all, files);
-
-      const scene = serializeAsJSON(elements, appState, files, "local");
-      let thumbnail = "";
-      if (elements.length) {
-        try {
-          const svg = await exportToSvg({
-            elements,
-            files,
-            appState: { ...appState, exportBackground: true, exportWithDarkMode: appState.theme === "dark" },
-            exportPadding: 12,
-          });
-          thumbnail = (await embedThaiFontInSvg(svg)).outerHTML;
-        } catch (e) {
-          console.warn("Thumbnail failed", e);
-        }
-      }
-      await saveProject(id, scene, thumbnail, { create });
+      const version = sceneVersion(api.getSceneElementsIncludingDeleted(), files);
+      await saveProject(id, { elements: api.getSceneElements(), appState: api.getAppState(), files }, { create });
       savedVersion.current = version;
     },
     [api]
@@ -215,7 +201,7 @@ export default function App() {
       serverTimer.current = setTimeout(() => {
         serverTimer.current = null;
         saveCurrentNow();
-      }, AUTOSAVE_MS);
+      }, storageRef.current === "github" ? AUTOSAVE_CLOUD_MS : AUTOSAVE_MS);
     },
     [saveCurrentNow]
   );
@@ -261,10 +247,39 @@ export default function App() {
     [putOnCanvas] // eslint-disable-line react-hooks/exhaustive-deps
   );
 
-  // reopen last project on start
+  const applyStorage = (info) => {
+    storageRef.current = info.mode;
+    setStorage(info);
+  };
+
+  // find where to save (GitHub or local folder), then reopen the last project
   useEffect(() => {
-    if (api && currentRef.current) openProject(currentRef.current, { silent: true });
+    if (!api) return;
+    initStorage().then((info) => {
+      applyStorage(info);
+      if (info.error) toast(info.error, 6000);
+      if (info.mode !== "none" && currentRef.current) openProject(currentRef.current, { silent: true });
+    });
   }, [api]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const handleConnect = async (cfg) => {
+    await flush();
+    const info = await connectGitHub(cfg);
+    applyStorage(info);
+    setCurrent(null);
+    setStatus("saved");
+    setListKey((k) => k + 1);
+    toast(`Connected — projects now save to ${info.label}`, 3500);
+  };
+
+  const handleDisconnect = async () => {
+    await flush();
+    const info = await disconnectGitHub();
+    applyStorage(info);
+    setCurrent(null);
+    setListKey((k) => k + 1);
+    toast("Disconnected from GitHub", 2500);
+  };
 
   // ---------- actions ----------
   const handleOpenFromList = async (id) => {
@@ -440,7 +455,7 @@ export default function App() {
             <button
               className={`project-chip status-${current ? status : "none"}`}
               onClick={() => setShowList(true)}
-              title={statusLabel}
+              title={`${statusLabel}${storage.label ? ` · ${storage.label}` : ""}`}
             >
               <FolderIcon />
               <span className="project-chip-name">{current || "Untitled"}</span>
@@ -471,6 +486,9 @@ export default function App() {
           <MainMenu.Item icon={<UploadIcon />} onSelect={() => fileInput.current?.click()}>
             Import file…
           </MainMenu.Item>
+          <MainMenu.Item icon={<CloudIcon />} onSelect={() => setShowCloud(true)}>
+            Cloud sync (GitHub)…
+          </MainMenu.Item>
           <MainMenu.Separator />
           <MainMenu.DefaultItems.Export />
           <MainMenu.DefaultItems.SaveAsImage />
@@ -494,7 +512,11 @@ export default function App() {
               <span className="brand">Vdea</span>
             </WelcomeScreen.Center.Logo>
             <WelcomeScreen.Center.Heading>
-              Projects are saved in the <b>save</b> folder.
+              {storage.mode === "github"
+                ? "Your projects sync to GitHub — open them on any device."
+                : storage.mode === "local"
+                  ? <>Projects are saved in the <b>save</b> folder.</>
+                  : "Connect GitHub (☰ → Cloud sync) to save projects from any device."}
             </WelcomeScreen.Center.Heading>
             <WelcomeScreen.Center.Menu>
               <WelcomeScreen.Center.MenuItem icon={<FolderIcon />} onSelect={() => setShowList(true)}>
@@ -524,11 +546,22 @@ export default function App() {
         theme={theme}
         current={current}
         refreshKey={listKey}
+        storage={storage}
+        onCloud={() => { setShowList(false); setShowCloud(true); }}
         onClose={() => setShowList(false)}
         onOpen={handleOpenFromList}
         onNew={() => { setShowList(false); askName("new", "Untitled"); }}
         onRename={(id) => askName("rename", id, id)}
         onDelete={handleDelete}
+      />
+
+      <CloudDialog
+        open={showCloud}
+        theme={theme}
+        storage={storage}
+        onClose={() => setShowCloud(false)}
+        onConnect={handleConnect}
+        onDisconnect={handleDisconnect}
       />
 
       <NameDialog

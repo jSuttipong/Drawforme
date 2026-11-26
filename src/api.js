@@ -1,32 +1,55 @@
-const BASE = "/api/projects";
-const enc = encodeURIComponent;
+// Picks where projects are saved:
+//   - GitHub repo (if connected)  -> works from any device, incl. GitHub Pages
+//   - local "save" folder         -> when running `npm run dev` on your PC
+import * as local from "./storage/local";
+import * as github from "./storage/github";
 
-async function json(res) {
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    const err = new Error(data.error || res.statusText);
-    err.status = res.status;
-    throw err;
+let backend = null;
+
+const info = () => (backend ? { mode: backend.mode, label: backend.describe() } : { mode: "none", label: "" });
+
+export async function initStorage() {
+  const cfg = github.getConfig();
+  if (cfg) {
+    backend = github;
+    try {
+      await github.connect(cfg);
+      return info();
+    } catch (e) {
+      return { ...info(), error: `GitHub sync: ${e.message}` };
+    }
   }
-  return data;
+  backend = (await local.available()) ? local : null;
+  return info();
 }
 
-export const listProjects = () => fetch(BASE).then(json);
-export const getProject = (id) => fetch(`${BASE}/${enc(id)}`).then(json);
-export const deleteProject = (id) => fetch(`${BASE}/${enc(id)}`, { method: "DELETE" }).then(json);
-export const renameProject = (id, newId) =>
-  fetch(`${BASE}/${enc(id)}/rename`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ newId }),
-  }).then(json);
-export const saveProject = (id, scene, thumbnail, { create = false } = {}) =>
-  fetch(`${BASE}/${enc(id)}${create ? "?create=1" : ""}`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ scene, thumbnail }),
-  }).then(json);
-export const thumbUrl = (id, t) => `${BASE}/${enc(id)}/thumb?t=${t}`;
+export async function connectGitHub(cfg) {
+  await github.connect(cfg);
+  backend = github;
+  return info();
+}
+
+export async function disconnectGitHub() {
+  github.clearConfig();
+  backend = (await local.available()) ? local : null;
+  return info();
+}
+
+export const getGitHubConfig = github.getConfig;
+
+function need() {
+  if (!backend) {
+    throw Object.assign(new Error("Nowhere to save yet — open ☰ → Cloud sync (GitHub) to connect."), { status: 0 });
+  }
+  return backend;
+}
+
+export const listProjects = (...a) => need().listProjects(...a);
+export const getProject = (...a) => need().getProject(...a);
+export const saveProject = (...a) => need().saveProject(...a);
+export const deleteProject = (...a) => need().deleteProject(...a);
+export const renameProject = (...a) => need().renameProject(...a);
+export const getThumb = (p) => (backend ? backend.getThumb(p) : Promise.resolve(null));
 
 // Windows-safe file name
 export const cleanName = (name) =>

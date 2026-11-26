@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
-import { listProjects, thumbUrl } from "../api";
-import { CloseIcon, PencilIcon, PlusIcon, TrashIcon } from "./icons";
+import { getThumb, listProjects } from "../api";
+import { CloseIcon, CloudIcon, PencilIcon, PlusIcon, TrashIcon } from "./icons";
 
 const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
 function timeAgo(ms) {
+  if (!ms) return "";
   const s = Math.round((ms - Date.now()) / 1000);
   const steps = [[60, "second"], [60, "minute"], [24, "hour"], [7, "day"], [4.35, "week"], [12, "month"], [Infinity, "year"]];
   let v = s;
@@ -14,12 +15,27 @@ function timeAgo(ms) {
 }
 
 function Thumb({ project }) {
+  const [src, setSrc] = useState(null);
   const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    setSrc(null);
+    setFailed(false);
+    if (project.hasThumb) {
+      getThumb(project)
+        .then((url) => alive && setSrc(url))
+        .catch(() => alive && setFailed(true));
+    }
+    return () => {
+      alive = false;
+    };
+  }, [project]);
   if (!project.hasThumb || failed) return <div className="dfm-thumb-empty">Empty</div>;
-  return <img src={thumbUrl(project.id, project.updatedAt)} alt="" onError={() => setFailed(true)} draggable={false} />;
+  if (!src) return <div className="dfm-thumb-empty">Loading…</div>;
+  return <img src={src} alt="" onError={() => setFailed(true)} draggable={false} />;
 }
 
-export default function ProjectList({ open, theme, current, refreshKey, onClose, onOpen, onNew, onRename, onDelete }) {
+export default function ProjectList({ open, theme, current, refreshKey, storage, onClose, onOpen, onNew, onRename, onDelete, onCloud }) {
   const [projects, setProjects] = useState(null);
   const [error, setError] = useState("");
   const [query, setQuery] = useState("");
@@ -27,10 +43,15 @@ export default function ProjectList({ open, theme, current, refreshKey, onClose,
   useEffect(() => {
     if (!open) return;
     setError("");
+    setProjects(null);
+    if (storage.mode === "none" || storage.mode === "loading") {
+      setProjects([]);
+      return;
+    }
     listProjects()
       .then(setProjects)
       .catch((e) => setError(`Couldn't load projects: ${e.message}`));
-  }, [open, refreshKey]);
+  }, [open, refreshKey, storage.mode, storage.label]);
 
   useEffect(() => {
     if (!open) return;
@@ -52,6 +73,10 @@ export default function ProjectList({ open, theme, current, refreshKey, onClose,
         <div className="dfm-panel-header">
           <h2>Project list</h2>
           <span className="dfm-count">{projects ? projects.length : "…"}</span>
+          <button className="dfm-icon-btn" onClick={onCloud} title={`Saved in: ${storage.label || "nowhere yet"} — click to change`}>
+            <CloudIcon />
+          </button>
+          <span className="dfm-storage">{storage.label}</span>
           <input
             className="dfm-input dfm-search"
             placeholder="Search projects…"
@@ -70,7 +95,16 @@ export default function ProjectList({ open, theme, current, refreshKey, onClose,
         {error && <div className="dfm-error">{error}</div>}
 
         <div className="dfm-grid">
-          {projects && shown.length === 0 && (
+          {storage.mode === "none" && (
+            <div className="dfm-empty">
+              To save projects here (and open them on any device), connect a GitHub repo.
+              <br />
+              <button className="dfm-btn dfm-btn-primary" onClick={onCloud}>
+                <CloudIcon /> Connect GitHub
+              </button>
+            </div>
+          )}
+          {storage.mode !== "none" && projects && shown.length === 0 && (
             <div className="dfm-empty">
               {projects.length === 0 ? "No projects yet — click “New” to create one." : "No projects match your search."}
             </div>

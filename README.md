@@ -21,6 +21,21 @@ npm run build
 
 Upload the `dist/` folder to any static host (Netlify, Vercel, GitHub Pages).
 
+## Use it online (any device)
+
+The app is published with GitHub Pages: **https://jsuttipong.github.io/Drawforme/**
+(every push to `main` rebuilds it via `.github/workflows/deploy.yml`).
+
+To save projects from any device, open ☰ → **Cloud sync (GitHub)…** and connect a private repo
+(e.g. `Drawforme-save`) with a fine-grained token that has **Contents: Read and write** on that repo only.
+Do this once per device/browser — the token stays in that browser. Every save is a commit in that repo:
+
+- `save/<name>.excalidraw` – the drawing · `save/<name>.thumb.png` – preview
+- `save/files/<id>.json` – images (uploaded once) · `save/index.json` – last-saved times
+
+When the cloud is connected, the app on your PC uses it too, so every device sees the same projects.
+To move an old local drawing to the cloud, use ☰ → **Import file…** and pick it from the `save` folder.
+
 ## Projects (save folder)
 
 Open the menu (☰) → **Project list** to see all your drawings as cards. Click a card to open it;
