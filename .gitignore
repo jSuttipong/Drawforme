@@ -1,0 +1,7 @@
+node_modules
+dist
+.vite
+
+# your drawings stay on your PC
+save/*
+!save/.gitkeep
